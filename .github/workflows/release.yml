@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # Triggers on tags like v1.0.0, v1.0.1, etc.
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for tags
+
+      - name: Install Shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Run Shellcheck
+        run: shellcheck use_op_path.sh
+
+      - name: Get version from tag
+        id: tag
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Generate SHA256 checksum
+        id: checksum
+        run: |
+          SHA256=$(shasum -a 256 use_op_path.sh | cut -d' ' -f1)
+          echo "SHA256=$SHA256" >> $GITHUB_OUTPUT
+          echo "SHA256_DIRENV=sha256-$SHA256" >> $GITHUB_OUTPUT
+          echo "Generated SHA256: $SHA256"
+          echo "direnv format: sha256-$SHA256"
+
+      - name: Create checksums file
+        run: |
+          shasum -a 256 use_op_path.sh > checksums.txt
+          echo "" >> checksums.txt
+          echo "For direnv source_url usage:" >> checksums.txt
+          echo "sha256-${{ steps.checksum.outputs.SHA256 }}" >> checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            use_op_path.sh
+            checksums.txt
+          body: |
+            ## Release ${{ steps.tag.outputs.VERSION }}
+
+            ### Installation
+
+            **Using direnv `source_url`:**
+
+            ```sh
+            source_url "https://github.com/${{ github.repository }}/raw/${{ steps.tag.outputs.VERSION }}/use_op_path.sh" "${{ steps.checksum.outputs.SHA256_DIRENV }}"
+            ```
+
+            **SHA256 Checksum:**
+            ```
+            ${{ steps.checksum.outputs.SHA256 }}
+            ```
+
+            **direnv format:**
+            ```
+            ${{ steps.checksum.outputs.SHA256_DIRENV }}
+            ```
+
+            ### Changes
+
+            See the [full changelog](https://github.com/${{ github.repository }}/compare/${{ steps.tag.outputs.VERSION }}^...${{ steps.tag.outputs.VERSION }}).
+          draft: false
+          prerelease: false
