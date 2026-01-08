@@ -1,6 +1,6 @@
 # op_secret_path: direnv + 1Password session-scoped file helper
 
-`use_op_path.sh` provides the `op_secret_path` function so direnv can fetch a 1Password secret into a temp file (for tools that require file paths, like private keys), keep it alive for the lifetime of your shell tab, and clean it up safely.
+`op_secret_path.sh` provides the `op_secret_path` function so direnv can fetch a 1Password secret into a temp file (for tools that require file paths, like private keys), keep it alive for the lifetime of your shell tab, and clean it up safely.
 
 Inspired by the excellent [`direnv-1password`](https://github.com/tmatilai/direnv-1password/) project.
 
@@ -42,7 +42,7 @@ Note: `from_op` is provided by the upstream [`direnv-1password`](https://github.
 
 ```sh
 # ~/.config/direnv/direnvrc
-source "path/to/OP_PATH/use_op_path.sh"
+source "path/to/OP_PATH/op_secret_path.sh"
 ```
 
 ### Remote (recommended)
@@ -51,8 +51,8 @@ Use `source_url` in your `~/.config/direnv/direnvrc`:
 
 ```sh
 # Replace <org> and <tag> with actual values, e.g.:
-# source_url "https://github.com/yourusername/OP_PATH/raw/v1.0.0/use_op_path.sh" "sha256-<checksum>"
-source_url "https://github.com/<org>/OP_PATH/raw/<tag>/use_op_path.sh" "sha256-<pinned-sha256>"
+# source_url "https://github.com/yourusername/OP_PATH/raw/v1.0.0/op_secret_path.sh" "sha256-<checksum>"
+source_url "https://github.com/<org>/OP_PATH/raw/<tag>/op_secret_path.sh" "sha256-<pinned-sha256>"
 ```
 
 **Getting the checksum:**
@@ -61,7 +61,7 @@ source_url "https://github.com/<org>/OP_PATH/raw/<tag>/use_op_path.sh" "sha256-<
 2. The release notes include the SHA256 checksum in direnv format (`sha256-...`)
 3. Or compute it yourself:
    ```sh
-   direnv fetchurl "https://github.com/<org>/OP_PATH/raw/<tag>/use_op_path.sh"
+   direnv fetchurl "https://github.com/<org>/OP_PATH/raw/<tag>/op_secret_path.sh"
    ```
 
 ## How it works

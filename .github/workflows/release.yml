@@ -23,7 +23,7 @@ jobs:
           sudo apt-get install -y shellcheck
 
       - name: Run Shellcheck
-        run: shellcheck use_op_path.sh
+        run: shellcheck op_secret_path.sh
 
       - name: Get version from tag
         id: tag
@@ -32,24 +32,31 @@ jobs:
       - name: Generate SHA256 checksum
         id: checksum
         run: |
-          SHA256=$(shasum -a 256 use_op_path.sh | cut -d' ' -f1)
-          echo "SHA256=$SHA256" >> $GITHUB_OUTPUT
-          echo "SHA256_DIRENV=sha256-$SHA256" >> $GITHUB_OUTPUT
-          echo "Generated SHA256: $SHA256"
-          echo "direnv format: sha256-$SHA256"
+          SHA256_HEX=$(shasum -a 256 op_secret_path.sh | cut -d' ' -f1)
+          # Convert hex to base64 using Python (more portable than xxd)
+          SHA256_BASE64=$(python3 -c "import binascii, base64; print(base64.b64encode(binascii.unhexlify('$SHA256_HEX')).decode())")
+          echo "SHA256_HEX=$SHA256_HEX" >> $GITHUB_OUTPUT
+          echo "SHA256_BASE64=$SHA256_BASE64" >> $GITHUB_OUTPUT
+          echo "SHA256_DIRENV=sha256-$SHA256_BASE64" >> $GITHUB_OUTPUT
+          echo "Generated SHA256 (hex): $SHA256_HEX"
+          echo "Generated SHA256 (base64): $SHA256_BASE64"
+          echo "direnv format: sha256-$SHA256_BASE64"
 
       - name: Create checksums file
         run: |
-          shasum -a 256 use_op_path.sh > checksums.txt
+          shasum -a 256 op_secret_path.sh > checksums.txt
+          echo "" >> checksums.txt
+          echo "SHA256 (hex): ${{ steps.checksum.outputs.SHA256_HEX }}" >> checksums.txt
+          echo "SHA256 (base64): ${{ steps.checksum.outputs.SHA256_BASE64 }}" >> checksums.txt
           echo "" >> checksums.txt
           echo "For direnv source_url usage:" >> checksums.txt
-          echo "sha256-${{ steps.checksum.outputs.SHA256 }}" >> checksums.txt
+          echo "${{ steps.checksum.outputs.SHA256_DIRENV }}" >> checksums.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            use_op_path.sh
+            op_secret_path.sh
             checksums.txt
           body: |
             ## Release ${{ steps.tag.outputs.VERSION }}
@@ -59,15 +66,20 @@ jobs:
             **Using direnv `source_url`:**
 
             ```sh
-            source_url "https://github.com/${{ github.repository }}/raw/${{ steps.tag.outputs.VERSION }}/use_op_path.sh" "${{ steps.checksum.outputs.SHA256_DIRENV }}"
+            source_url "https://github.com/${{ github.repository }}/raw/${{ steps.tag.outputs.VERSION }}/op_secret_path.sh" "${{ steps.checksum.outputs.SHA256_DIRENV }}"
             ```
 
-            **SHA256 Checksum:**
+            **SHA256 Checksum (hex):**
             ```
-            ${{ steps.checksum.outputs.SHA256 }}
+            ${{ steps.checksum.outputs.SHA256_HEX }}
             ```
 
-            **direnv format:**
+            **SHA256 Checksum (base64):**
+            ```
+            ${{ steps.checksum.outputs.SHA256_BASE64 }}
+            ```
+
+            **direnv source_url format:**
             ```
             ${{ steps.checksum.outputs.SHA256_DIRENV }}
             ```

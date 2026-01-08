@@ -20,4 +20,4 @@ jobs:
           sudo apt-get install -y shellcheck
 
       - name: Run Shellcheck
-        run: shellcheck use_op_path.sh
+        run: shellcheck op_secret_path.sh
