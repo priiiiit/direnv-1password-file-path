@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'  # Triggers on tags like v1.0.0, v1.0.1, etc.
+      - 'v*'
 
 jobs:
   release:
@@ -15,7 +15,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Fetch all history for tags
+          fetch-depth: 0
 
       - name: Install Shellcheck
         run: |
@@ -24,68 +24,70 @@ jobs:
 
       - name: Run Shellcheck
         run: shellcheck op_secret_path.sh
+        # Note: op_secret_path_cleanup.zsh is zsh-only, shellcheck doesn't support zsh
 
       - name: Get version from tag
         id: tag
         run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
-      - name: Generate SHA256 checksum
+      - name: Generate checksums
         id: checksum
         run: |
-          SHA256_HEX=$(shasum -a 256 op_secret_path.sh | cut -d' ' -f1)
-          # Convert hex to base64 using Python (more portable than xxd)
-          SHA256_BASE64=$(python3 -c "import binascii, base64; print(base64.b64encode(binascii.unhexlify('$SHA256_HEX')).decode())")
-          echo "SHA256_HEX=$SHA256_HEX" >> $GITHUB_OUTPUT
-          echo "SHA256_BASE64=$SHA256_BASE64" >> $GITHUB_OUTPUT
-          echo "SHA256_DIRENV=sha256-$SHA256_BASE64" >> $GITHUB_OUTPUT
-          echo "Generated SHA256 (hex): $SHA256_HEX"
-          echo "Generated SHA256 (base64): $SHA256_BASE64"
-          echo "direnv format: sha256-$SHA256_BASE64"
+          # Main script checksum (for direnv source_url)
+          MAIN_HEX=$(shasum -a 256 op_secret_path.sh | cut -d' ' -f1)
+          MAIN_BASE64=$(python3 -c "import binascii, base64; print(base64.b64encode(binascii.unhexlify('$MAIN_HEX')).decode())")
+          echo "MAIN_HEX=$MAIN_HEX" >> $GITHUB_OUTPUT
+          echo "MAIN_BASE64=$MAIN_BASE64" >> $GITHUB_OUTPUT
+          echo "MAIN_DIRENV=sha256-$MAIN_BASE64" >> $GITHUB_OUTPUT
+          
+          # Cleanup script checksum
+          CLEANUP_HEX=$(shasum -a 256 op_secret_path_cleanup.zsh | cut -d' ' -f1)
+          CLEANUP_BASE64=$(python3 -c "import binascii, base64; print(base64.b64encode(binascii.unhexlify('$CLEANUP_HEX')).decode())")
+          echo "CLEANUP_HEX=$CLEANUP_HEX" >> $GITHUB_OUTPUT
+          echo "CLEANUP_BASE64=$CLEANUP_BASE64" >> $GITHUB_OUTPUT
 
       - name: Create checksums file
         run: |
-          shasum -a 256 op_secret_path.sh > checksums.txt
+          echo "# SHA256 Checksums" > checksums.txt
           echo "" >> checksums.txt
-          echo "SHA256 (hex): ${{ steps.checksum.outputs.SHA256_HEX }}" >> checksums.txt
-          echo "SHA256 (base64): ${{ steps.checksum.outputs.SHA256_BASE64 }}" >> checksums.txt
+          shasum -a 256 op_secret_path.sh >> checksums.txt
+          shasum -a 256 op_secret_path_cleanup.zsh >> checksums.txt
           echo "" >> checksums.txt
-          echo "For direnv source_url usage:" >> checksums.txt
-          echo "${{ steps.checksum.outputs.SHA256_DIRENV }}" >> checksums.txt
+          echo "# For direnv source_url (base64 format):" >> checksums.txt
+          echo "op_secret_path.sh: ${{ steps.checksum.outputs.MAIN_DIRENV }}" >> checksums.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
             op_secret_path.sh
+            op_secret_path_cleanup.zsh
             checksums.txt
           body: |
             ## Release ${{ steps.tag.outputs.VERSION }}
 
-            ### Installation
+            ### Installation (Both Required)
 
-            **Using direnv `source_url`:**
+            **Step 1: In `~/.zshrc` (before direnv hook):**
+            ```zsh
+            source "path/to/op_secret_path_cleanup.zsh"
+            ```
 
+            **Step 2: In `~/.config/direnv/direnvrc`:**
             ```sh
-            source_url "https://github.com/${{ github.repository }}/raw/${{ steps.tag.outputs.VERSION }}/op_secret_path.sh" "${{ steps.checksum.outputs.SHA256_DIRENV }}"
+            source_url "https://github.com/${{ github.repository }}/raw/${{ steps.tag.outputs.VERSION }}/op_secret_path.sh" "${{ steps.checksum.outputs.MAIN_DIRENV }}"
             ```
 
-            **SHA256 Checksum (hex):**
-            ```
-            ${{ steps.checksum.outputs.SHA256_HEX }}
-            ```
+            ### Checksums
 
-            **SHA256 Checksum (base64):**
-            ```
-            ${{ steps.checksum.outputs.SHA256_BASE64 }}
-            ```
+            | File | SHA256 (hex) |
+            |------|--------------|
+            | `op_secret_path.sh` | `${{ steps.checksum.outputs.MAIN_HEX }}` |
+            | `op_secret_path_cleanup.zsh` | `${{ steps.checksum.outputs.CLEANUP_HEX }}` |
 
             **direnv source_url format:**
             ```
-            ${{ steps.checksum.outputs.SHA256_DIRENV }}
+            ${{ steps.checksum.outputs.MAIN_DIRENV }}
             ```
-
-            ### Changes
-
-            See the [full changelog](https://github.com/${{ github.repository }}/compare/${{ steps.tag.outputs.VERSION }}^...${{ steps.tag.outputs.VERSION }}).
           draft: false
           prerelease: false

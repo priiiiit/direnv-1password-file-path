@@ -1,24 +1,31 @@
 #!/bin/sh
 # op_secret_path: session-scoped 1Password file helper for direnv
 # POSIX-friendly so it can be fetched with direnv's source_url.
+#
+# SETUP: See README.md for complete installation instructions.
+# This file provides the op_secret_path and op_secret_path_encrypted functions for direnv.
+# For automatic cleanup, also source op_secret_path_cleanup.zsh in your .zshrc
 
-op_secret_path() {
-  # POSIX sh: no pipefail; -e/-u still enforced
-  set -eu
+# Internal helper: parse arguments, resolve paths, build filepath.
+# Sets: _osp_var_name, _osp_op_ref, _osp_filepath
+_op_secret_path_core() {
+  _osp_fn_name="$1"
+  _osp_prefix="$2"
+  shift 2
 
   # Accept KEY=OP_REF and keep KEY OP_REF fallback.
   raw="${1-}"
-  op_ref="${2-}"
+  _osp_op_ref="${2-}"
   if [ "${raw#*=}" != "${raw}" ]; then
-    var_name="${raw%%=*}"
-    op_ref="${raw#*=}"
+    _osp_var_name="${raw%%=*}"
+    _osp_op_ref="${raw#*=}"
   else
-    var_name="${raw}"
+    _osp_var_name="${raw}"
   fi
 
-  if [ -z "${var_name:-}" ] || [ -z "${op_ref:-}" ]; then
-    printf 'Usage: op_secret_path VAR_NAME=op://vault/item/field\n' >&2
-    printf '   or: op_secret_path VAR_NAME "op://vault/item/field"\n' >&2
+  if [ -z "${_osp_var_name:-}" ] || [ -z "${_osp_op_ref:-}" ]; then
+    printf 'Usage: %s VAR_NAME=op://vault/item/field\n' "${_osp_fn_name}" >&2
+    printf '   or: %s VAR_NAME "op://vault/item/field"\n' "${_osp_fn_name}" >&2
     return 1
   fi
   if ! command -v op >/dev/null 2>&1; then
@@ -26,49 +33,90 @@ op_secret_path() {
     return 1
   fi
 
-  # Identify the interactive shell PID. direnv runs in a subshell, so use the parent.
-  parent_from_ps="$(ps -o ppid= -p $$ 2>/dev/null | tr -d '[:space:]')"
-  shell_pid="${DIRENV_PARENT_PID:-${parent_from_ps:-$PPID}}"
+  # Session ID from interactive shell (set by op_secret_path_cleanup.zsh)
+  # This MUST be set for cleanup to work correctly
+  if [ -z "${OP_SECRET_SESSION_ID:-}" ]; then
+    printf 'Warning: OP_SECRET_SESSION_ID not set. Cleanup will not work.\n' >&2
+    printf 'Source op_secret_path_cleanup.zsh in your .zshrc\n' >&2
+    _osp_shell_pid="$$"
+  else
+    _osp_shell_pid="${OP_SECRET_SESSION_ID}"
+  fi
 
-  # Prefer RAM disk on Linux when available; macOS defaults to TMPDIR.
-  tmp_root="${TMPDIR:-/tmp}"
+  # Prefer RAM disk on Linux; macOS uses TMPDIR
+  _osp_tmp_root="${TMPDIR:-/tmp}"
   if [ "$(uname -s)" != "Darwin" ] && [ -d /dev/shm ]; then
-    tmp_root="/dev/shm"
+    _osp_tmp_root="/dev/shm"
   fi
 
-  hash="$(printf '%s' "${op_ref}" | shasum -a 256 | cut -d' ' -f1)"
-  filepath="${tmp_root}/direnv-${hash}-${shell_pid}.secret"
-
-  _op_secret_path_gc "${tmp_root}"
-
-  if [ ! -f "${filepath}" ]; then
-    if ! op read "${op_ref}" > "${filepath}"; then
-      rm -f "${filepath}"
-      printf 'op read failed for %s\n' "${op_ref}" >&2
-      return 1
-    fi
-    if ! chmod 600 "${filepath}"; then
-      rm -f "${filepath}"
-      printf 'chmod failed for %s\n' "${filepath}" >&2
-      return 1
+  # Hash of direnv directory for per-directory cleanup (canonical path to avoid symlink mismatches)
+  _osp_dir_hash="none"
+  if [ -n "${DIRENV_DIR:-}" ]; then
+    if _osp_dir_real="$(cd "${DIRENV_DIR}" 2>/dev/null && pwd -P)"; then
+      _osp_dir_hash="$(printf '%s' "${_osp_dir_real}" | shasum -a 256 | cut -c1-8)"
+    else
+      _osp_dir_hash="$(printf '%s' "${DIRENV_DIR}" | shasum -a 256 | cut -c1-8)"
     fi
   fi
 
-  export "${var_name}"="${filepath}"
+  _osp_ref_hash="$(printf '%s' "${_osp_op_ref}" | shasum -a 256 | cut -d' ' -f1)"
+  _osp_filepath="${_osp_tmp_root}/direnv-${_osp_prefix}${_osp_ref_hash}-${_osp_dir_hash}-${_osp_shell_pid}.secret"
 }
 
-_op_secret_path_gc() {
-  root="${1:-${TMPDIR:-/tmp}}"
-  for file in "${root}"/direnv-*-*.secret; do
-    [ -e "${file}" ] || continue
-    base="$(basename -- "${file}")"
-    pid_part="${base%.secret}"
-    pid="${pid_part##*-}"
-    case "${pid}" in
-      (*[!0-9]*|'') continue ;;
-    esac
-    if ! kill -0 "${pid}" 2>/dev/null; then
-      rm -P "${file}" 2>/dev/null || rm -f "${file}"
+op_secret_path() {
+  set -eu
+
+  _op_secret_path_core "op_secret_path" "" "$@"
+
+  if [ ! -f "${_osp_filepath}" ]; then
+    if ! op read "${_osp_op_ref}" > "${_osp_filepath}"; then
+      rm -f "${_osp_filepath}"
+      printf 'op read failed for %s\n' "${_osp_op_ref}" >&2
+      return 1
     fi
-  done
+    chmod 600 "${_osp_filepath}" || {
+      rm -f "${_osp_filepath}"
+      printf 'chmod failed for %s\n' "${_osp_filepath}" >&2
+      return 1
+    }
+  fi
+
+  export "${_osp_var_name}"="${_osp_filepath}"
+}
+
+# Fetch a private key from 1Password, re-encrypt it with a random passphrase,
+# and export both the file path and the passphrase as environment variables.
+# The plaintext key never touches disk — it is piped directly through openssl.
+op_secret_path_encrypted() {
+  set -eu
+
+  if ! command -v openssl >/dev/null 2>&1; then
+    printf 'openssl required for op_secret_path_encrypted\n' >&2
+    return 1
+  fi
+
+  _op_secret_path_core "op_secret_path_encrypted" "enc-" "$@"
+
+  # No caching: passphrase must be generated fresh each time direnv evaluates.
+  # Remove stale file from a previous load if present.
+  rm -f "${_osp_filepath}"
+
+  _osp_passphrase="$(openssl rand -base64 32)"
+
+  # Pipe op read directly into openssl — plaintext never touches disk.
+  if ! op read "${_osp_op_ref}" \
+    | openssl pkey -aes256 -passout "pass:${_osp_passphrase}" -out "${_osp_filepath}" 2>/dev/null; then
+    rm -f "${_osp_filepath}"
+    printf 'Encryption failed for %s. Is this a valid private key?\n' "${_osp_op_ref}" >&2
+    return 1
+  fi
+
+  chmod 600 "${_osp_filepath}" || {
+    rm -f "${_osp_filepath}"
+    printf 'chmod failed for %s\n' "${_osp_filepath}" >&2
+    return 1
+  }
+
+  export "${_osp_var_name}"="${_osp_filepath}"
+  export "${_osp_var_name}_PASSPHRASE"="${_osp_passphrase}"
 }

@@ -1,97 +1,138 @@
 # op_secret_path: direnv + 1Password session-scoped file helper
 
-`op_secret_path.sh` provides the `op_secret_path` function so direnv can fetch a 1Password secret into a temp file (for tools that require file paths, like private keys), keep it alive for the lifetime of your shell tab, and clean it up safely.
+Fetch 1Password secrets into temporary files for tools that require file paths (SSH keys, Snowflake keys, certificates). Files are automatically cleaned up when you leave the directory or close your terminal.
 
-Inspired by the excellent [`direnv-1password`](https://github.com/tmatilai/direnv-1password/) project.
+Inspired by [`direnv-1password`](https://github.com/tmatilai/direnv-1password/).
 
-## Why you might want this
+## Why you need this
 
-- Your tool needs a file, not an env var (SSH keys, Snowflake keys, certs).
-- direnv runs in a subshell; naive cleanup either deletes the file immediately or loses track of it.
-- You want per-tab isolation and automatic cleanup when the tab exits.
+- Your tool needs a **file path**, not an environment variable
+- direnv runs in a subshell — naive cleanup breaks the workflow
+- You want **automatic cleanup** when leaving the directory (security)
 
-## Quick examples
+## Installation (Two Files Required)
 
-In a project `.envrc`:
+⚠️ **Both files must be sourced for automatic cleanup to work.**
 
-```sh
-# Snowflake key as a file, passphrase as string
-op_secret_path SNOWFLAKE_PRIVATE_KEY="op://Employee/SnowFlake/private key"
-from_op     SNOWFLAKE_PRIVATE_KEY_PASSWORD="op://Employee/SnowFlake/password"
-export PRIVATE_KEY_PASSPHRASE="$SNOWFLAKE_PRIVATE_KEY_PASSWORD"
+Due to how direnv works (isolated subprocess), cleanup hooks must run in your interactive shell. This requires two source statements.
+
+### Step 1: Source cleanup hooks in `~/.zshrc`
+
+```zsh
+# Add BEFORE the direnv hook (eval "$(direnv hook zsh)")
+source "path/to/op_secret_path_cleanup.zsh"
 ```
 
-SSH deploy key:
+Or with `source_url` (after first release):
+```zsh
+# Download once, then source locally
+curl -o ~/.config/direnv/op_secret_path_cleanup.zsh \
+  "https://github.com/<org>/direnv-1password-file-path/raw/<tag>/op_secret_path_cleanup.zsh"
+source ~/.config/direnv/op_secret_path_cleanup.zsh
+```
+
+### Step 2: Source function in `~/.config/direnv/direnvrc`
 
 ```sh
+# Local
+source "path/to/op_secret_path.sh"
+
+# Or remote with source_url
+source_url "https://github.com/<org>/direnv-1password-file-path/raw/<tag>/op_secret_path.sh" "sha256-<checksum>"
+```
+
+### Getting the checksum
+
+Check the [Releases](https://github.com/priiiiit/direnv-1password-file-path/releases) page, or compute it:
+```sh
+direnv fetchurl "https://github.com/<org>/direnv-1password-file-path/raw/<tag>/op_secret_path.sh"
+```
+
+## Usage
+
+In your project's `.envrc`:
+
+```sh
+# Snowflake private key as a file
+op_secret_path SNOWFLAKE_PRIVATE_KEY="op://Employee/SnowFlake/private key"
+
+# SSH deploy key
 op_secret_path DEPLOY_SSH_KEY="op://Work/DeployKey/private key"
 export GIT_SSH_COMMAND="ssh -i $DEPLOY_SSH_KEY -o IdentitiesOnly=yes"
 ```
 
-Note: `from_op` is provided by the upstream [`direnv-1password`](https://github.com/tmatilai/direnv-1password/) project.
+### Encrypted keys (recommended for private keys)
+
+`op_secret_path_encrypted` re-encrypts the key with a random passphrase before writing it to disk. The plaintext key never touches the filesystem — it is piped directly through `openssl`.
+
+```sh
+# Snowflake private key — encrypted at rest
+op_secret_path_encrypted SNOWFLAKE_KEY="op://Employee/SnowFlake/private key"
+# Exports:
+#   SNOWFLAKE_KEY           → path to encrypted PEM file
+#   SNOWFLAKE_KEY_PASSPHRASE → random passphrase to decrypt it
+
+# SSH deploy key — encrypted at rest
+op_secret_path_encrypted DEPLOY_SSH_KEY="op://Work/DeployKey/private key"
+export GIT_SSH_COMMAND="ssh -i $DEPLOY_SSH_KEY -o IdentitiesOnly=yes"
+```
+
+Consuming tools use the companion `_PASSPHRASE` variable:
+- **SSH**: prompts for passphrase automatically, or use `ssh-agent`
+- **Snowflake**: set `private_key_passphrase` in your connector config to `$SNOWFLAKE_KEY_PASSPHRASE`
+
+## How it works
+
+### `op_secret_path`
+
+1. Fetches the secret via `op read`
+2. Writes to a temp file: `direnv-<hash>-<dir_hash>-<session_id>.secret`
+3. Sets permissions to `0600` (owner read/write only)
+4. Exports the file path as the specified variable
+
+### `op_secret_path_encrypted`
+
+1. Generates a random passphrase via `openssl rand -base64 32`
+2. Pipes `op read` directly into `openssl pkey -aes256` — plaintext never touches disk
+3. Writes the encrypted PEM to: `direnv-enc-<hash>-<dir_hash>-<session_id>.secret`
+4. Sets permissions to `0600`
+5. Exports the file path as the specified variable, and the passphrase as `${VAR_NAME}_PASSPHRASE`
+
+**Cleanup behavior:**
+- **Leave directory** → file deleted immediately (via `chpwd` hook)
+- **Close terminal** → file deleted (via `zshexit` hook)
+- **Crash/kill** → file cleaned up on next terminal open (when hooks load)
 
 ## Requirements
 
 - direnv (v2.x)
-- 1Password CLI (`op`) installed and signed in (`op account get` should work)
-- POSIX shell (script uses `set -euo pipefail`)
+- 1Password CLI (`op`) — signed in (`op account get` should work)
+- Zsh (for automatic cleanup hooks)
+- OpenSSL or LibreSSL (only for `op_secret_path_encrypted`)
 
-## Install / load
+## Security
 
-### Local (repo checkout)
+| Protection | Details |
+|------------|---------|
+| File permissions | `0600` — only you can read |
+| Linux storage | `/dev/shm` (RAM disk) — never touches disk |
+| macOS storage | `$TMPDIR` — on SSD but FileVault encrypts |
+| Secure delete | `rm -P` used where available (overwrites before delete) |
+| Isolation | Each terminal session has its own files |
+| Encryption at rest | `op_secret_path_encrypted` re-encrypts keys with a random passphrase; plaintext never written to disk |
 
-```sh
-# ~/.config/direnv/direnvrc
-source "path/to/OP_PATH/op_secret_path.sh"
-```
+## Files
 
-### Remote (recommended)
+| File | Purpose | Where to source |
+|------|---------|-----------------|
+| `op_secret_path.sh` | POSIX function for direnv | `~/.config/direnv/direnvrc` |
+| `op_secret_path_cleanup.zsh` | Zsh cleanup hooks | `~/.zshrc` (before direnv hook) |
 
-Use `source_url` in your `~/.config/direnv/direnvrc`:
+## Why two files?
 
-```sh
-# Replace <org> and <tag> with actual values, e.g.:
-# source_url "https://github.com/yourusername/OP_PATH/raw/v1.0.0/op_secret_path.sh" "sha256-<checksum>"
-source_url "https://github.com/<org>/OP_PATH/raw/<tag>/op_secret_path.sh" "sha256-<pinned-sha256>"
-```
+direnv evaluates `.envrc` in an **isolated subprocess** (bash). That subprocess cannot register hooks in your interactive shell (zsh). Therefore:
 
-**Getting the checksum:**
+1. The **function** must be available in direnv's context → `direnvrc`
+2. The **cleanup hooks** must run in your shell → `.zshrc`
 
-1. Check the [GitHub Releases](https://github.com/<org>/OP_PATH/releases) page for the version you want
-2. The release notes include the SHA256 checksum in direnv format (`sha256-...`)
-3. Or compute it yourself:
-   ```sh
-   direnv fetchurl "https://github.com/<org>/OP_PATH/raw/<tag>/op_secret_path.sh"
-   ```
-
-## How it works
-
-- Runs `op read` to fetch the item.
-- Writes to `${TMPDIR:-/tmp}` (or `/dev/shm` on Linux) as `direnv-<sha256>-<PID>.secret`.
-- Sets permissions to `0600`.
-- GC: removes `direnv-*-*.secret` files whose PIDs are no longer running.
-- Per-PID idempotency: reuses the same file for the current shell PID if present.
-
-## Cleanup
-
-- Recommended: keep a `zshexit` (or equivalent) hook that deletes `direnv-*-<PID>.secret` for the current shell PID. Example (zsh):
-
-```sh
-_op_path_session_cleanup() {
-  emulate -L zsh
-  setopt local_options null_glob
-  local tmp_root="${TMPDIR:-/tmp}"
-  local file
-  for file in "${tmp_root}"/direnv-*-$$.secret(N); do
-    rm -P "$file" 2>/dev/null || rm -f "$file"
-  done
-}
-autoload -Uz add-zsh-hook
-add-zsh-hook zshexit _op_path_session_cleanup
-```
-
-## Security notes
-
-- Files are `0600`; no group/world access.
-- Uses `/dev/shm` on Linux to prefer RAM; macOS uses `$TMPDIR`.
-- Exports only file paths; contents stay on disk until cleaned.
+This is a fundamental limitation of how direnv works, not a design choice.
