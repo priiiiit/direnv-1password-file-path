@@ -1,6 +1,25 @@
 #!/bin/sh
-# op_secret_path: session-scoped 1Password file helper for direnv
-# POSIX-friendly so it can be fetched with direnv's source_url.
+# op_secret_path: session-scoped 1Password file helper for mise
+# Source this file via mise's env._source or from your shell profile.
+
+_op_secret_find_shell_pid() {
+  # Walk ancestors until we find a shell process — that's the interactive shell.
+  # mise's env._source runs scripts in a bash subprocess, so $$ and $PPID are
+  # transient PIDs. We need the long-lived interactive shell PID for per-tab
+  # isolation and GC.
+  pid="$PPID"
+  while [ -n "${pid}" ] && [ "${pid}" != "1" ] && [ "${pid}" != "0" ]; do
+    comm="$(ps -o comm= -p "${pid}" 2>/dev/null | tr -d '[:space:]')"
+    case "${comm}" in
+      zsh|-zsh|bash|-bash|fish|dash|sh|-sh|ksh|-ksh)
+        printf '%s' "${pid}"
+        return
+        ;;
+    esac
+    pid="$(ps -o ppid= -p "${pid}" 2>/dev/null | tr -d '[:space:]')"
+  done
+  printf '%s' "${PPID:-$$}"
+}
 
 op_secret_path() {
   # POSIX sh: no pipefail; -e/-u still enforced
@@ -26,9 +45,8 @@ op_secret_path() {
     return 1
   fi
 
-  # Identify the interactive shell PID. direnv runs in a subshell, so use the parent.
-  parent_from_ps="$(ps -o ppid= -p $$ 2>/dev/null | tr -d '[:space:]')"
-  shell_pid="${DIRENV_PARENT_PID:-${parent_from_ps:-$PPID}}"
+  # Identify the interactive shell PID. OP_SECRET_SHELL_PID allows manual override.
+  shell_pid="${OP_SECRET_SHELL_PID:-$(_op_secret_find_shell_pid)}"
 
   # Prefer RAM disk on Linux when available; macOS defaults to TMPDIR.
   tmp_root="${TMPDIR:-/tmp}"
@@ -37,7 +55,7 @@ op_secret_path() {
   fi
 
   hash="$(printf '%s' "${op_ref}" | shasum -a 256 | cut -d' ' -f1)"
-  filepath="${tmp_root}/direnv-${hash}-${shell_pid}.secret"
+  filepath="${tmp_root}/op-secret-${hash}-${shell_pid}.secret"
 
   _op_secret_path_gc "${tmp_root}"
 
@@ -59,7 +77,7 @@ op_secret_path() {
 
 _op_secret_path_gc() {
   root="${1:-${TMPDIR:-/tmp}}"
-  for file in "${root}"/direnv-*-*.secret; do
+  for file in "${root}"/op-secret-*-*.secret; do
     [ -e "${file}" ] || continue
     base="$(basename -- "${file}")"
     pid_part="${base%.secret}"
