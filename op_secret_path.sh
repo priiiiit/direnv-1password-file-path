@@ -22,8 +22,9 @@ _op_secret_find_shell_pid() {
 }
 
 op_secret_path() {
-  # POSIX sh: no pipefail; -e/-u still enforced
-  set -eu
+  # Don't `set -eu` here: shell options set inside a function persist into the
+  # interactive caller (zsh/bash), so a failed `op read` would exit the user's
+  # shell. All error paths below are checked explicitly instead.
 
   # Accept KEY=OP_REF and keep KEY OP_REF fallback.
   raw="${1-}"
@@ -77,8 +78,10 @@ op_secret_path() {
 
 _op_secret_path_gc() {
   root="${1:-${TMPDIR:-/tmp}}"
-  for file in "${root}"/op-secret-*-*.secret; do
-    [ -e "${file}" ] || continue
+  # Use find instead of a glob: zsh's default NOMATCH option aborts globs
+  # that match nothing, which would break first-run GC. find returns no
+  # rows cleanly. -maxdepth keeps us out of subdirectories.
+  find "${root}" -maxdepth 1 -type f -name 'op-secret-*-*.secret' 2>/dev/null | while IFS= read -r file; do
     base="$(basename -- "${file}")"
     pid_part="${base%.secret}"
     pid="${pid_part##*-}"
